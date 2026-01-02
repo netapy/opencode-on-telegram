@@ -4694,7 +4694,3 @@ function printServerError(error: unknown): void {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
 }
-
-console.log("Starting Telegram bot...");
-bot.start();
-console.log("Bot running! Message your bot on Telegram.");
