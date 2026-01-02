@@ -273,7 +273,7 @@ const MAX_SESSION_LABEL = 48;
 const MAX_BREADCRUMB_TOOLS = 8;
 const BREADCRUMB_FULL_NAME_COUNT = 3;
 
-const SESSION_DIVIDER = "------------------------------";
+const SESSION_DIVIDER_LINE = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━";
 
 const TOOL_ICONS: Record<string, string> = {
   read: "📖",
@@ -482,7 +482,58 @@ function formatShortPath(dir: string, max = MAX_DIR_LABEL): string {
 }
 
 function formatSessionDivider(label: string): string {
-  return `${SESSION_DIVIDER}\n${label}\n${SESSION_DIVIDER}`;
+  return `${SESSION_DIVIDER_LINE}\n${label}\n${SESSION_DIVIDER_LINE}`;
+}
+
+function formatTime(date = new Date()): string {
+  return date.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+type SessionDividerParams = {
+  title: string;
+  directory?: string;
+  model?: string | null;
+  mode?: string;
+  icon?: string;
+};
+
+function formatRichSessionDivider(params: SessionDividerParams): string {
+  const { title, directory, model, mode, icon = "✨" } = params;
+  const time = formatTime();
+  
+  const lines: string[] = [
+    SESSION_DIVIDER_LINE,
+    `${icon} ${title}`,
+    "",
+  ];
+  
+  // Info line with directory
+  const infoParts: string[] = [];
+  if (directory) {
+    infoParts.push(`📁 ${formatShortPath(directory, 24)}`);
+  }
+  infoParts.push(`🕐 ${time}`);
+  lines.push(infoParts.join("  "));
+  
+  // Model and mode line
+  const configParts: string[] = [];
+  if (model) {
+    configParts.push(`🤖 ${model}`);
+  }
+  if (mode) {
+    configParts.push(`🧭 ${mode}`);
+  }
+  if (configParts.length > 0) {
+    lines.push(configParts.join("  "));
+  }
+  
+  lines.push(SESSION_DIVIDER_LINE);
+  
+  return lines.join("\n");
 }
 
 function getHomeDirectory(): string {
@@ -2992,9 +3043,18 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     }
 
     const title = await getCurrentSessionTitle(opencode, sessionId);
+    const switchModel = formatModelLabel(getUserModel(userId));
+    const switchMode = getUserAgentMode(userId);
+    const switchDirectory = await getCurrentSessionDirectory(opencode, sessionId);
     await ctx.api.sendMessage(
       chatId,
-      formatSessionDivider(`🧭 Switched to ${title ?? sessionId.slice(0, 8)}`),
+      formatRichSessionDivider({
+        title: `Switched to ${title ?? sessionId.slice(0, 8)}`,
+        directory: switchDirectory ?? undefined,
+        model: switchModel,
+        mode: switchMode,
+        icon: "🧭",
+      }),
       withThreadId({}, messageThreadId),
     );
     await maybeUpdateStatusPanel({
@@ -3040,12 +3100,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       );
       return;
     }
-    await ctx.api.sendMessage(
-      chatId,
-      formatSessionDivider("✨ New conversation started."),
-      withThreadId({}, messageThreadId),
-    );
-    const currentTitle = await getCurrentSessionTitle(opencode, session.id);
     const currentModel = formatModelLabel(getUserModel(userId));
     const currentMode = getUserAgentMode(userId);
     const currentDirectory = await getContextBaseDirectory({
@@ -3054,6 +3108,18 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       sessionId: session.id,
       userId,
     });
+    await ctx.api.sendMessage(
+      chatId,
+      formatRichSessionDivider({
+        title: "New conversation started",
+        directory: currentDirectory,
+        model: currentModel,
+        mode: currentMode,
+        icon: "✨",
+      }),
+      withThreadId({}, messageThreadId),
+    );
+    const currentTitle = await getCurrentSessionTitle(opencode, session.id);
     await updateMenuMessage({
       api: ctx.api,
       chatId,
@@ -3124,12 +3190,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       );
       return;
     }
-    await ctx.api.sendMessage(
-      chatId,
-      formatSessionDivider("🧹 Cleared. New conversation started."),
-      withThreadId({}, messageThreadId),
-    );
-    const currentTitle = await getCurrentSessionTitle(opencode, session.id);
     const currentModel = formatModelLabel(getUserModel(userId));
     const currentMode = getUserAgentMode(userId);
     const currentDirectory = await getContextBaseDirectory({
@@ -3138,6 +3198,18 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       sessionId: session.id,
       userId,
     });
+    await ctx.api.sendMessage(
+      chatId,
+      formatRichSessionDivider({
+        title: "Cleared · New conversation started",
+        directory: currentDirectory,
+        model: currentModel,
+        mode: currentMode,
+        icon: "🧹",
+      }),
+      withThreadId({}, messageThreadId),
+    );
+    const currentTitle = await getCurrentSessionTitle(opencode, session.id);
     await updateMenuMessage({
       api: ctx.api,
       chatId,
@@ -3308,13 +3380,21 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       const session = await createNewSessionForChat({ opencode, contextKey, userId });
       if (session) {
         directoryBrowseStates.delete(contextKey);
+        const selectModel = formatModelLabel(getUserModel(userId));
+        const selectMode = getUserAgentMode(userId);
         await ctx.editMessageText(
           `✅ Directory set to ${baseDir}\n\n✨ New session started.`,
           { reply_markup: idleKeyboard() },
         ).catch(() => {});
         await ctx.api.sendMessage(
           msg.chat.id,
-          formatSessionDivider(`📁 New session in ${baseDir}`),
+          formatRichSessionDivider({
+            title: "New session started",
+            directory: baseDir,
+            model: selectModel,
+            mode: selectMode,
+            icon: "📁",
+          }),
           withThreadId({}, messageThreadId),
         );
         await updateStatusPanel({
@@ -4044,7 +4124,24 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       await ctx.reply("Failed to create new conversation.", withThreadId({}, messageThreadId));
       return;
     }
-    await ctx.reply(formatSessionDivider("✨ New conversation started."), withThreadId({}, messageThreadId));
+    const newModel = formatModelLabel(getUserModel(uid));
+    const newMode = getUserAgentMode(uid);
+    const newDirectory = await getContextBaseDirectory({
+      opencode,
+      contextKey,
+      sessionId: session.id,
+      userId: uid,
+    });
+    await ctx.reply(
+      formatRichSessionDivider({
+        title: "New conversation started",
+        directory: newDirectory,
+        model: newModel,
+        mode: newMode,
+        icon: "✨",
+      }),
+      withThreadId({}, messageThreadId),
+    );
     await maybeUpdateStatusPanel({
       opencode,
       api: ctx.api,
