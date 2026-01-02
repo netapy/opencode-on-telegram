@@ -1820,17 +1820,23 @@ async function closeModelMenusForUser(params: { api: Api; userId: number }): Pro
 
 async function fetchProviders(opencode: OpencodeClient): Promise<{ providers: ProviderSummary[]; defaults?: DefaultModels }> {
   const { data } = await opencode.provider.list();
-  const providers = (data?.all ?? []).map(provider => {
-    const models = Object.values(provider.models ?? {}).map(model => ({
-      id: model.id,
-      name: model.name,
-      attachment: model.attachment,
-      reasoning: model.reasoning,
-      tool_call: model.tool_call,
-      status: model.status,
-    }));
-    return { id: provider.id, name: provider.name, models };
-  });
+  const connectedIds = new Set(data?.connected ?? []);
+  const allProviders = data?.all ?? [];
+  
+  // Only show providers that are connected (have valid auth)
+  const providers = allProviders
+    .filter(provider => connectedIds.has(provider.id))
+    .map(provider => {
+      const models = Object.values(provider.models ?? {}).map(model => ({
+        id: model.id,
+        name: model.name,
+        attachment: model.attachment,
+        reasoning: model.reasoning,
+        tool_call: model.tool_call,
+        status: model.status,
+      }));
+      return { id: provider.id, name: provider.name, models };
+    });
   return { providers };
 }
 
