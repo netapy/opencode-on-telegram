@@ -521,15 +521,11 @@ function formatRichSessionDivider(params: SessionDividerParams): string {
   
   // Model and mode line
   const configParts: string[] = [];
-  if (model) {
-    configParts.push(`🤖 ${model}`);
-  }
+  configParts.push(`🤖 ${model ?? "default"}`);
   if (mode) {
     configParts.push(`🧭 ${mode}`);
   }
-  if (configParts.length > 0) {
-    lines.push(configParts.join("  "));
-  }
+  lines.push(configParts.join("  "));
   
   lines.push(SESSION_DIVIDER_LINE);
   
