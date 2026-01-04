@@ -111,13 +111,6 @@ type ModelSelection = {
 
 type AgentMode = "plan" | "build";
 
-type StatusState = {
-  messageId: number;
-  chatId: number;
-  threadId?: number;
-  lastText: string;
-};
-
 type DirectoryListingEntry = {
   label: string;
   path: string;
@@ -141,7 +134,6 @@ type BranchCache = {
 type UserSettings = {
   model?: ModelSelection;
   agentMode?: AgentMode;
-  statusByContext?: Map<string, StatusState>;
   branch?: BranchCache;
   defaultDirectory?: string;
 };
@@ -499,10 +491,11 @@ type SessionDividerParams = {
   model?: string | null;
   mode?: string;
   icon?: string;
+  context?: string[];
 };
 
 function formatRichSessionDivider(params: SessionDividerParams): string {
-  const { title, directory, model, mode, icon = "✨" } = params;
+  const { title, directory, model, mode, icon = "✨", context } = params;
   const time = formatTime();
   
   const lines: string[] = [
@@ -526,6 +519,12 @@ function formatRichSessionDivider(params: SessionDividerParams): string {
     configParts.push(`🧭 ${mode}`);
   }
   lines.push(configParts.join("  "));
+  
+  // Context preview (last messages)
+  if (context && context.length > 0) {
+    lines.push("");
+    lines.push(...context);
+  }
   
   lines.push(SESSION_DIVIDER_LINE);
   
@@ -836,27 +835,6 @@ function recordUsage(userId: number, modelLabel: string | null, tokens: number, 
   }
 }
 
-function getStatusMap(userId: number): Map<string, StatusState> {
-  const settings = getUserSettings(userId);
-  if (!settings.statusByContext) {
-    settings.statusByContext = new Map();
-  }
-  return settings.statusByContext;
-}
-
-function getStatusState(userId: number, contextKey: string): StatusState | null {
-  return getStatusMap(userId).get(contextKey) ?? null;
-}
-
-function setStatusState(userId: number, contextKey: string, state: StatusState | null): void {
-  const map = getStatusMap(userId);
-  if (state) {
-    map.set(contextKey, state);
-  } else {
-    map.delete(contextKey);
-  }
-}
-
 function formatUsageLine(stats: UsageStats | undefined): string {
   if (!stats) return "Usage: 0 tok · $0.000";
   const dayKey = getDateKey();
@@ -914,81 +892,23 @@ async function buildStatusText(params: {
   return lines.join("\n");
 }
 
-async function updateStatusPanel(params: {
+async function sendStatusMessage(params: {
   opencode: OpencodeClient;
   api: Api;
   userId: number;
   chatId: number;
   contextKey: string;
   messageThreadId?: number;
-  force?: boolean;
 }): Promise<void> {
-  const { opencode, api, userId, chatId, contextKey, messageThreadId, force = false } = params;
-  const current = getStatusState(userId, contextKey);
+  const { opencode, api, userId, chatId, contextKey, messageThreadId } = params;
   const sessionId = chatSessions.get(contextKey);
   const rawText = await buildStatusText({ opencode, userId, contextKey, sessionId });
   const formatted = toTelegramMarkdown(rawText);
-  const threadId = messageThreadId ?? current?.threadId;
-
-  if (current) {
-    if (!force && current.lastText === formatted) return;
-    try {
-      await api.editMessageText(current.chatId, current.messageId, formatted, {
-        reply_markup: EMPTY_INLINE_KEYBOARD,
-        parse_mode: TELEGRAM_PARSE_MODE,
-      });
-      current.lastText = formatted;
-      setStatusState(userId, contextKey, current);
-    } catch (err) {
-      const message = String(err);
-      if (message.includes("message is not modified")) {
-        return;
-      }
-      console.error("Status update failed:", message);
-      const msg = await api.sendMessage(
-        chatId,
-        formatted,
-        withThreadId({ parse_mode: TELEGRAM_PARSE_MODE }, threadId),
-      );
-      const nextState: StatusState = {
-        messageId: msg.message_id,
-        chatId,
-        threadId,
-        lastText: formatted,
-      };
-      setStatusState(userId, contextKey, nextState);
-    }
-    return;
-  }
-
-  const msg = await api.sendMessage(
+  await api.sendMessage(
     chatId,
     formatted,
-    withThreadId({ parse_mode: TELEGRAM_PARSE_MODE }, threadId),
+    withThreadId({ parse_mode: TELEGRAM_PARSE_MODE }, messageThreadId),
   );
-  const nextState: StatusState = {
-    messageId: msg.message_id,
-    chatId,
-    threadId,
-    lastText: formatted,
-  };
-  setStatusState(userId, contextKey, nextState);
-}
-
-async function maybeUpdateStatusPanel(params: {
-  opencode: OpencodeClient;
-  api: Api;
-  userId: number;
-  chatId: number;
-  contextKey: string;
-  messageThreadId?: number;
-  forceBranchRefresh?: boolean;
-}): Promise<void> {
-  const { opencode, api, userId, chatId, contextKey, messageThreadId, forceBranchRefresh = false } = params;
-  if (forceBranchRefresh) {
-    await getBranchName(opencode, userId, true);
-  }
-  await updateStatusPanel({ opencode, api, userId, chatId, contextKey, messageThreadId });
 }
 
 function truncateOutput(text: string, max = MAX_OUTPUT_CHARS): string {
@@ -1174,6 +1094,52 @@ function extractTextFromParts(parts: Array<Part>): string {
     .map(part => (part as TextPart).text)
     .filter(Boolean);
   return texts.join("\n").trim();
+}
+
+function hasToolUsage(parts: Array<Part>): string | null {
+  const toolPart = parts.find(part => part.type === "tool") as ToolPart | undefined;
+  if (!toolPart) return null;
+  return TOOL_ICONS[toolPart.tool] ?? "🔧";
+}
+
+async function getSessionContextPreview(
+  opencode: OpencodeClient,
+  sessionId: string,
+  maxMessages = 3,
+): Promise<string[]> {
+  try {
+    const { data: messages } = await opencode.session.messages({
+      path: { id: sessionId },
+      ...withSessionDirectory(sessionId),
+    });
+    if (!messages || messages.length === 0) return [];
+
+    // Get last N messages
+    const recent = messages.slice(-maxMessages);
+    const lines: string[] = [];
+
+    for (const msg of recent) {
+      const role = msg.info.role;
+      const icon = role === "user" ? "👤" : "🤖";
+      const text = extractTextFromParts(msg.parts);
+      if (!text) continue;
+
+      // Truncate to ~100 chars
+      const preview = text.length > 100 ? text.slice(0, 97) + "..." : text;
+      // Remove newlines for compact display
+      const oneLine = preview.replace(/\n+/g, " ").trim();
+
+      // Add tool icon if AI used tools
+      const toolIcon = role === "assistant" ? hasToolUsage(msg.parts) : null;
+      const prefix = toolIcon ? `${icon}${toolIcon}` : icon;
+
+      lines.push(`${prefix} ${oneLine}`);
+    }
+
+    return lines;
+  } catch {
+    return [];
+  }
 }
 
 function parseCommandArgs(text: string): string[] {
@@ -2796,15 +2762,6 @@ async function streamSession(params: {
         parseMode,
       });
     }
-    await maybeUpdateStatusPanel({
-      opencode,
-      api,
-      userId,
-      chatId,
-      contextKey,
-      messageThreadId,
-      forceBranchRefresh: true,
-    });
   } catch (err) {
     console.error("Stream error:", err);
     await api.editMessageText(chatId, messageId, "Error processing message.", { reply_markup: idleKeyboard() }).catch(() => {});
@@ -2912,15 +2869,14 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
   }
 
   if (action === "status") {
-    await ctx.answerCallbackQuery({ text: "Refreshing status..." });
-    await updateStatusPanel({
+    await ctx.answerCallbackQuery({ text: "Showing status..." });
+    await sendStatusMessage({
       opencode,
       api: ctx.api,
       userId,
       chatId,
       contextKey,
       messageThreadId,
-      force: true,
     });
     return;
   }
@@ -3048,6 +3004,7 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     const switchModel = formatModelLabel(getUserModel(userId));
     const switchMode = getUserAgentMode(userId);
     const switchDirectory = await getCurrentSessionDirectory(opencode, sessionId);
+    const context = await getSessionContextPreview(opencode, sessionId);
     await ctx.api.sendMessage(
       chatId,
       formatRichSessionDivider({
@@ -3056,17 +3013,10 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         model: switchModel,
         mode: switchMode,
         icon: "🧭",
+        context,
       }),
       withThreadId({}, messageThreadId),
     );
-    await maybeUpdateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId,
-      chatId,
-      contextKey,
-      messageThreadId,
-    });
 
     const sessions = await listSessions(opencode);
     const currentTitle = await getCurrentSessionTitle(opencode, sessionId);
@@ -3129,14 +3079,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       text: menuMainText(currentTitle, currentModel, currentMode, currentDirectory),
       keyboard: menuMainKeyboard(),
       state: { userId, page: 0, sessionIds: [] },
-    });
-    await maybeUpdateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId,
-      chatId,
-      contextKey,
-      messageThreadId,
     });
     return;
   }
@@ -3219,14 +3161,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       text: menuMainText(currentTitle, currentModel, currentMode, currentDirectory),
       keyboard: menuMainKeyboard(),
       state: { userId, page: 0, sessionIds: [] },
-    });
-    await maybeUpdateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId,
-      chatId,
-      contextKey,
-      messageThreadId,
     });
     return;
   }
@@ -3360,15 +3294,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         userId,
       });
       await render(nextBase, 0, "Directory reset to default.");
-      await updateStatusPanel({
-        opencode,
-        api: ctx.api,
-        userId,
-        chatId: msg.chat.id,
-        contextKey,
-        messageThreadId,
-        force: true,
-      });
       await ctx.answerCallbackQuery();
       return;
     }
@@ -3384,10 +3309,8 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         directoryBrowseStates.delete(contextKey);
         const selectModel = formatModelLabel(getUserModel(userId));
         const selectMode = getUserAgentMode(userId);
-        await ctx.editMessageText(
-          `✅ Directory set to ${baseDir}\n\n✨ New session started.`,
-          { reply_markup: idleKeyboard() },
-        ).catch(() => {});
+        // Delete the directory browser and send rich divider
+        await ctx.deleteMessage().catch(() => {});
         await ctx.api.sendMessage(
           msg.chat.id,
           formatRichSessionDivider({
@@ -3399,15 +3322,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
           }),
           withThreadId({}, messageThreadId),
         );
-        await updateStatusPanel({
-          opencode,
-          api: ctx.api,
-          userId,
-          chatId: msg.chat.id,
-          contextKey,
-          messageThreadId,
-          force: true,
-        });
         await ctx.answerCallbackQuery({ text: "Session started" });
       } else {
         await render(baseDir, page, "✅ Selected but failed to create session.");
@@ -3421,15 +3335,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       setUserDefaultDirectory(userId, baseDir);
       trackRecentDirectory(contextKey, baseDir);
       await render(baseDir, page, `⭐ Default set to ${formatShortPath(baseDir)}`);
-      await updateStatusPanel({
-        opencode,
-        api: ctx.api,
-        userId,
-        chatId: msg.chat.id,
-        contextKey,
-        messageThreadId,
-        force: true,
-      });
       await ctx.answerCallbackQuery({ text: "Default directory set" });
       return;
     }
@@ -3591,14 +3496,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         `✅ Model set to ${recent.label}`,
         withThreadId({}, messageThreadId),
       );
-      await maybeUpdateStatusPanel({
-        opencode,
-        api: ctx.api,
-        userId,
-        chatId,
-        contextKey,
-        messageThreadId,
-      });
       return;
     }
 
@@ -3647,14 +3544,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         `✅ Model set to ${model.name}`,
         withThreadId({}, messageThreadId),
       );
-      await maybeUpdateStatusPanel({
-        opencode,
-        api: ctx.api,
-        userId,
-        chatId,
-        contextKey,
-        messageThreadId,
-      });
       return;
     }
   });
@@ -3696,14 +3585,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     await ctx.api.editMessageText(chatId, messageId, modeMenuText(mode), {
       reply_markup: modeMenuKeyboard(mode),
     }).catch(() => {});
-    await maybeUpdateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId,
-      chatId,
-      contextKey,
-      messageThreadId,
-    });
   });
 
   // Callback: Auth actions
@@ -3915,31 +3796,21 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       `OpenCode\n\n📁 ${baseDir}\n\nJust send a message to start.`,
       withThreadId({ reply_markup: idleKeyboard() }, messageThreadId),
     );
-    await updateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId: uid,
-      chatId: ctx.chat.id,
-      contextKey,
-      messageThreadId,
-      force: true,
-    });
   });
 
-  // /status - Persistent status panel
+  // /status - Show current status
   bot.command("status", async (ctx) => {
     const uid = ctx.from?.id;
     if (!uid) return;
     const messageThreadId = getMessageThreadId(ctx);
     const contextKey = getSessionKey(ctx.chat, messageThreadId);
-    await updateStatusPanel({
+    await sendStatusMessage({
       opencode,
       api: ctx.api,
       userId: uid,
       chatId: ctx.chat.id,
       contextKey,
       messageThreadId,
-      force: true,
     });
   });
 
@@ -3981,15 +3852,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
         notice: "Directory reset to default.",
       });
       await ctx.reply(text, withThreadId({ reply_markup: keyboard }, messageThreadId));
-      await updateStatusPanel({
-        opencode,
-        api: ctx.api,
-        userId: uid,
-        chatId: ctx.chat.id,
-        contextKey,
-        messageThreadId,
-        force: true,
-      });
       return;
     }
 
@@ -4037,15 +3899,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       notice: "✅ Selected. New sessions will start here.",
     });
     await ctx.reply(text, withThreadId({ reply_markup: keyboard }, messageThreadId));
-    await updateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId: uid,
-      chatId: ctx.chat.id,
-      contextKey,
-      messageThreadId,
-      force: true,
-    });
   });
 
   // /auth - Provider authentication
@@ -4144,14 +3997,6 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       }),
       withThreadId({}, messageThreadId),
     );
-    await maybeUpdateStatusPanel({
-      opencode,
-      api: ctx.api,
-      userId: uid,
-      chatId: ctx.chat.id,
-      contextKey,
-      messageThreadId,
-    });
   });
 
   // /model - Model selection
