@@ -477,6 +477,21 @@ function formatSessionDivider(label: string): string {
   return `${SESSION_DIVIDER_LINE}\n${label}\n${SESSION_DIVIDER_LINE}`;
 }
 
+function formatDirName(dir: string): string {
+  const normalized = dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (normalized === "" || normalized === "/") return "/";
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || "/";
+}
+
+function cleanSessionTitle(title: string): string {
+  // Remove ISO timestamps like "2026-01-01T22:19:10.407Z"
+  const cleaned = title.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z?/g, "").trim();
+  // Clean up leftover separators
+  const tidied = cleaned.replace(/\s*-\s*$/, "").replace(/^\s*-\s*/, "").trim();
+  return tidied || "Untitled";
+}
+
 function formatTime(date = new Date()): string {
   return date.toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -1471,7 +1486,7 @@ function updateSessionCache(sessions: Session[]): void {
 async function getCurrentSessionTitle(opencode: OpencodeClient, sessionId?: string): Promise<string | null> {
   if (!sessionId) return null;
   const cached = sessionTitleCache.get(sessionId);
-  if (cached) return cached;
+  if (cached) return cleanSessionTitle(cached);
   try {
     const { data } = await opencode.session.get({
       path: { id: sessionId },
@@ -1479,7 +1494,7 @@ async function getCurrentSessionTitle(opencode: OpencodeClient, sessionId?: stri
     });
     if (data?.title) {
       sessionTitleCache.set(sessionId, data.title);
-      return data.title;
+      return cleanSessionTitle(data.title);
     }
     // No title yet - try to get first message as fallback
     const { data: messages } = await opencode.session.messages({
@@ -1499,8 +1514,10 @@ async function getCurrentSessionTitle(opencode: OpencodeClient, sessionId?: stri
   return sessionId.slice(0, 8);
 }
 
-async function listSessions(opencode: OpencodeClient): Promise<Session[]> {
-  const { data } = await opencode.session.list();
+async function listSessions(opencode: OpencodeClient, directory?: string): Promise<Session[]> {
+  const { data } = await opencode.session.list({
+    query: directory ? { directory } : undefined,
+  });
   const sessions = data ?? [];
   sessions.sort((a, b) => b.time.updated - a.time.updated);
   updateSessionCache(sessions);
@@ -1569,14 +1586,15 @@ function formatRelativeTime(timestamp: number): string {
 function formatSessionLabel(session: Session, isCurrent: boolean): string {
   const prefix = isCurrent ? "• " : "";
   const time = formatRelativeTime(session.time.updated);
-  const title = session.title || session.id.slice(0, 8);
+  const rawTitle = session.title || session.id.slice(0, 8);
+  const title = cleanSessionTitle(rawTitle);
   const summary = session.summary;
   let suffix = "";
   if (summary && (summary.additions > 0 || summary.deletions > 0)) {
     suffix = ` (+${summary.additions}/-${summary.deletions})`;
   }
-  const directory = session.directory ? ` · 📁 ${formatShortPath(session.directory)}` : "";
-  return truncate(`${prefix}${title} · ${time}${suffix}${directory}`, MAX_SESSION_LABEL);
+  const dirName = session.directory ? ` · 📁 ${formatDirName(session.directory)}` : "";
+  return truncate(`${prefix}${title} · ${time}${suffix}${dirName}`, MAX_SESSION_LABEL);
 }
 
 function buildSessionsMenu(params: {
@@ -2980,12 +2998,19 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
     const currentState = menuStates.get(key);
     const currentPage = currentState?.page ?? 0;
     const nextPage = action === "next" ? currentPage + 1 : action === "prev" ? currentPage - 1 : 0;
-    const sessions = await listSessions(opencode);
-    const currentTitle = await getCurrentSessionTitle(opencode, chatSessions.get(contextKey));
+    const currentSessionId = chatSessions.get(contextKey);
+    const directory = await getContextBaseDirectory({
+      opencode,
+      contextKey,
+      sessionId: currentSessionId,
+      userId,
+    });
+    const sessions = await listSessions(opencode, directory);
+    const currentTitle = await getCurrentSessionTitle(opencode, currentSessionId);
     const menu = buildSessionsMenu({
       sessions,
       page: nextPage,
-      currentSessionId: chatSessions.get(contextKey),
+      currentSessionId,
       currentTitle,
     });
     await updateMenuMessage({
@@ -3035,7 +3060,13 @@ bot.callbackQuery(/^menu:(.+)$/, async (ctx) => {
       withThreadId({}, messageThreadId),
     );
 
-    const sessions = await listSessions(opencode);
+    const sessionsDirectory = switchDirectory ?? await getContextBaseDirectory({
+      opencode,
+      contextKey,
+      sessionId,
+      userId,
+    });
+    const sessions = await listSessions(opencode, sessionsDirectory);
     const currentTitle = await getCurrentSessionTitle(opencode, sessionId);
     const menu = buildSessionsMenu({
       sessions,
