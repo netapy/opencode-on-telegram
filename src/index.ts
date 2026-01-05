@@ -967,6 +967,10 @@ function parseRetryAfterSeconds(message: string): number | null {
   return Number.isFinite(seconds) ? seconds : null;
 }
 
+function isTelegramParseError(message: string): boolean {
+  return message.includes("can't parse entities") || message.includes("parse entities");
+}
+
 function toTelegramMarkdown(text: string): string {
   return telegramifyMarkdown(text ?? "", "escape");
 }
@@ -1000,6 +1004,15 @@ async function editMessageWithRetry(params: {
         return false;
       }
     }
+    if (parseMode && isTelegramParseError(message)) {
+      try {
+        await api.editMessageText(chatId, messageId, text, { reply_markup: replyMarkup });
+        return true;
+      } catch (fallbackErr) {
+        console.error("Edit message failed:", fallbackErr);
+        return false;
+      }
+    }
     if (!message.includes("message is not modified")) {
       console.error("Edit message failed:", message);
     }
@@ -1028,6 +1041,10 @@ async function sendMessageWithRetry(params: {
     if (retry) {
       await sleep((retry + 1) * 1000);
       await api.sendMessage(chatId, text, options);
+      return;
+    }
+    if (parseMode && isTelegramParseError(message)) {
+      await api.sendMessage(chatId, text, withThreadId({ reply_markup: replyMarkup }, messageThreadId));
       return;
     }
     console.error("Send message failed:", err);
@@ -2427,7 +2444,7 @@ async function streamSession(params: {
         nextEditAllowedAt = now + retry * 1000;
         return;
       }
-      if (!usePlainText && message.includes("can't parse entities")) {
+      if (!usePlainText && isTelegramParseError(message)) {
         usePlainText = true;
         try {
           await api.editMessageText(chatId, messageId, clamped.text, {
