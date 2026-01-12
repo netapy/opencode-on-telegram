@@ -1,6 +1,22 @@
 # opencode-on-telegram
 
-A Telegram bot that connects OpenCode AI to Telegram, featuring streaming responses, tool permission management, and session management.
+A Telegram bot that connects OpenCode AI to Telegram, featuring streaming responses, tool permission management, session management, and persistent state.
+
+## Features
+
+- **Real-time Streaming**: Watch AI responses as they're generated
+- **Permission Profiles**: Strict/Balanced/Power modes for tool auto-approval
+- **Group Chat Scoping**: Per-user, per-thread, or shared sessions in groups
+- **Persistent State**: SQLite-backed settings, sessions, and usage stats
+- **Secret Redaction**: Auto-redact API keys and credentials in displays
+- **Workspace Safety**: Directory boundary enforcement
+- **Undo/Revert**: Rollback file edits and git operations
+- **Export**: Conversation export to Markdown/JSON/HTML
+- **History Search**: Full-text search across conversation history
+- **Task Workflows**: One-tap quick actions for common tasks
+- **File Upload**: Support for images and text files
+- **Voice Transcription**: Speech-to-text via OpenAI Whisper
+- **Git Integration**: Safe/confirmable git commands
 
 ## Prerequisites
 
@@ -11,15 +27,8 @@ A Telegram bot that connects OpenCode AI to Telegram, featuring streaming respon
 
 ### Installing OpenCode CLI
 
-The bot requires the OpenCode CLI to be installed on your system:
-
 ```bash
 curl -fsSL https://opencode.ai/install | bash
-```
-
-Verify it's installed:
-
-```bash
 opencode --version
 ```
 
@@ -31,25 +40,24 @@ bun install
 
 ## Configuration
 
-Copy the example file and fill in the variables:
-
 ```bash
 cp .env.example .env
 ```
 
-Important variables (see `.env.example`):
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Yes | From @BotFather |
+| `ANTHROPIC_API_KEY` | Yes | OpenCode/Anthropic API key |
+| `ALLOWED_USER_IDS` | Recommended | Comma-separated Telegram user IDs |
+| `OPENCODE_PORT` | No | Default: 4097 |
+| `OPENCODE_DEFAULT_DIR` | No | Default session directory |
+| `OPENCODE_MCP_CONFIG` | No | MCP config JSON |
+| `OPENAI_API_KEY` | No | For voice transcription |
+| `OPENCODE_DB_PATH` | No | SQLite path (default: ./opencode-telegram.db) |
 
-- `TELEGRAM_BOT_TOKEN` *(required)*
-- `ANTHROPIC_API_KEY` *(required)*
-- `ALLOWED_USER_IDS` *(recommended)*: Authorized Telegram IDs (comma-separated)
-- `OPENCODE_PORT` *(optional, default: 4097)*
-- `OPENCODE_DEFAULT_DIR` *(optional, default: ~/)*
-- `OPENCODE_MCP_CONFIG` *(optional, JSON)*
-- `OPENAI_API_KEY` *(optional, audio transcription)*
+## Running
 
-## Running the bot
-
-Development (watch):
+Development (watch mode):
 
 ```bash
 bun run dev
@@ -61,50 +69,83 @@ Production:
 bun run start
 ```
 
-TypeScript check:
+Type check:
 
 ```bash
 bun run typecheck
 ```
 
+Run tests:
+
+```bash
+bun run scripts/test-harness.ts
+```
+
 ## Compiling to binary
 
 ```bash
-bun run compile
+bun run compile        # Current platform
+bun run compile:linux  # Linux x64
+bun run compile:linux-arm  # Linux ARM64
+bun run compile:windows    # Windows x64
+bun run compile:all        # All platforms
 ```
-
-Targets:
-
-- `bun run compile:linux`
-- `bun run compile:linux-arm`
-- `bun run compile:windows`
-- `bun run compile:all`
 
 ## Commands
 
-List of commands to configure in BotFather (`/setcommands`):
+Configure in BotFather (`/setcommands`):
 
 ```
 start - Start the bot
 menu - Open main menu
 status - Show status panel
 new - Start new conversation
-cd - Change working directory for new sessions
+sessions - Manage sessions (list/switch/info/delete)
+cd - Change working directory
 model - Select AI model
-mode - Switch between Plan/Build modes
+mode - Switch Plan/Build modes
+profile - Permission profile (strict/balanced/power)
+scope - Group chat scope mode
 auth - Manage provider authentication
-git - Run git commands (status/log/diff/changes/branch/remote/show)
+git - Run git commands
 diff - Show session file changes
-compact - Summarize/compact conversation
+compact - Summarize conversation
 cost - Show usage statistics
-help - Show help message with all commands
+export - Export conversation
+history - View message history
+undo - Undo last action
+workflow - Quick task workflows
+help - Show help message
 ```
+
+### Shell Access
+
+Run shell commands directly with `!` prefix:
+
+```
+!ls -la
+!git status
+!cat package.json
+!pwd
+```
+
+**Blocked commands**: `sudo`, `curl`, `wget`, `npm`, `pip`, `rm -rf`, and shell operators (`&&`, `|`, `;`, `>`)
+
+## Permission Profiles
+
+- **Strict**: Ask for every action (nothing auto-allowed)
+- **Balanced**: Auto-allow reads, ask for writes (default)
+- **Power**: Auto-allow most, ask for destructive only
+
+## Group Chat Scopes
+
+- **User**: Isolated sessions per user (private)
+- **Thread**: Shared sessions per topic/thread
+- **Shared**: Single shared session for all users
 
 ## Troubleshooting
 
 ### "OpenCode CLI not found"
-
-Install the OpenCode CLI:
 
 ```bash
 curl -fsSL https://opencode.ai/install | bash
@@ -112,20 +153,16 @@ curl -fsSL https://opencode.ai/install | bash
 
 ### "Port 4097 is already in use"
 
-A previous OpenCode server is still running. Find and kill it:
-
 ```bash
 lsof -i :4097
 kill <PID>
+# Or use a different port:
+OPENCODE_PORT=4098 bun run start
 ```
 
-Or use a different port:
+## Security
 
-```bash
-OPENCODE_PORT=4098 bun run src/index.ts
-```
-
-## Security notes
-
-- Do not commit `.env`.
-- Enable `ALLOWED_USER_IDS` if the bot should not be public.
+- Never commit `.env`
+- Enable `ALLOWED_USER_IDS` for private bots
+- Secrets are auto-redacted in message displays
+- Set `allowedRoots` in user settings for workspace boundaries

@@ -31,27 +31,43 @@ bun run compile:all       # All platforms
 
 ## Testing
 
-**No automated test framework is configured.** Manual testing is done via:
+Run the test harness:
 
 ```bash
-# Debug script for testing OpenCode events without Telegram
-bun run scripts/opencode-event-debug.ts
+bun run scripts/test-harness.ts
 ```
 
-When adding features, test manually by running `bun run dev` and interacting with the Telegram bot.
+Debug OpenCode events without Telegram:
+
+```bash
+bun run scripts/opencode-event-debug.ts
+```
 
 ## Project Structure
 
 ```
 opencode-on-telegram/
 ├── src/
-│   └── index.ts           # Main application (Telegram bot + OpenCode integration)
+│   ├── index.ts           # Main Telegram bot
+│   └── lib/
+│       ├── types.ts       # TypeScript interfaces
+│       ├── db.ts          # SQLite persistence layer
+│       ├── constants.ts   # Configuration constants
+│       ├── utils.ts       # Utility functions
+│       ├── permissions.ts # Permission profile logic
+│       ├── redact.ts      # Secret redaction
+│       ├── safety.ts      # Workspace safety rails
+│       ├── scope.ts       # Group chat scoping
+│       ├── undo.ts        # Undo/revert functionality
+│       ├── export.ts      # Conversation export
+│       └── workflows.ts   # Task workflow templates
 ├── scripts/
+│   ├── test-harness.ts          # Comprehensive test suite
 │   └── opencode-event-debug.ts  # Debug/test script
 ├── package.json
 ├── tsconfig.json
-├── .env.example           # Environment variable template
-└── bun.lock
+├── .env.example
+└── opencode-telegram.db   # SQLite database (auto-created)
 ```
 
 ## Environment Variables
