@@ -50,15 +50,25 @@ import * as exportLib from "./lib/export.js"
 import * as workflows from "./lib/workflows.js"
 import * as shell from "./lib/shell.js"
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim()
+const TELEGRAM_BOT_TOKEN_VALUE = TELEGRAM_BOT_TOKEN ?? ""
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY?.trim()
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY?.trim()
 const ALLOWED_USER_IDS = process.env.ALLOWED_USER_IDS
   ?.split(",").map(v => v.trim()).filter(Boolean).map(Number).filter(id => Number.isFinite(id) && id > 0) ?? []
 const OPENCODE_PORT = Number(process.env.OPENCODE_PORT) || 4097
 const OPENCODE_MCP_CONFIG = process.env.OPENCODE_MCP_CONFIG
 const OPENCODE_DEFAULT_DIR = process.env.OPENCODE_DEFAULT_DIR
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY
 
 if (!TELEGRAM_BOT_TOKEN) { console.error("TELEGRAM_BOT_TOKEN required"); process.exit(1) }
+if (!ANTHROPIC_API_KEY && !OPENAI_API_KEY) {
+  console.error("At least one provider API key required (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+  process.exit(1)
+}
+if (ALLOWED_USER_IDS.length === 0) {
+  console.warn("⚠️  SECURITY WARNING: ALLOWED_USER_IDS is not set. Anyone can use this bot!")
+  console.warn("   Set ALLOWED_USER_IDS=123,456 in your .env to restrict access.")
+}
 
 type McpConfigMap = Record<string, McpLocalConfig | McpRemoteConfig>
 
@@ -849,10 +859,25 @@ function checkOpenCodeCLI(): { installed: boolean; version?: string; path?: stri
   return { installed: true, version: versionResult.exitCode === 0 ? versionResult.stdout.toString().trim() : undefined, path: binPath }
 }
 
-async function initializeBot(): Promise<{ bot: Bot; opencode: OpencodeClient; server: { close(): void; url: string } | null }> {
+function validateRuntime(): void {
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.error("TELEGRAM_BOT_TOKEN required")
+    process.exit(1)
+  }
+  if (!ANTHROPIC_API_KEY && !OPENAI_API_KEY) {
+    console.error("At least one provider API key required (ANTHROPIC_API_KEY or OPENAI_API_KEY)")
+    process.exit(1)
+  }
   const cliCheck = checkOpenCodeCLI()
-  if (!cliCheck.installed) { console.error("OpenCode CLI not found. Install: curl -fsSL https://opencode.ai/install | bash"); process.exit(1) }
+  if (!cliCheck.installed) {
+    console.error("OpenCode CLI not found. Install: curl -fsSL https://opencode.ai/install | bash")
+    process.exit(1)
+  }
   console.log(`OpenCode CLI: ${cliCheck.version ?? "unknown"} (${cliCheck.path ?? "opencode"})`)
+}
+
+async function initializeBot(): Promise<{ bot: Bot; opencode: OpencodeClient; server: { close(): void; url: string } | null }> {
+  validateRuntime()
   console.log(`Starting OpenCode server on port ${OPENCODE_PORT}...`)
   let opencode: OpencodeClient
   let server: { close(): void; url: string } | null = null
@@ -872,7 +897,10 @@ async function initializeBot(): Promise<{ bot: Bot; opencode: OpencodeClient; se
       console.log("OpenAI API key registered with OpenCode")
     } catch (err) { console.warn("Failed to register OpenAI API key:", err) }
   }
-  const bot = new Bot(TELEGRAM_BOT_TOKEN)
+  if (!OPENAI_API_KEY) {
+    console.warn("OPENAI_API_KEY not set. Voice and audio transcription will be disabled.")
+  }
+  const bot = new Bot(TELEGRAM_BOT_TOKEN_VALUE)
   bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 60 }))
   const cleanup = (reason: string) => { console.log(`Shutting down (${reason})...`); bot.stop(); server?.close(); db.closeDb() }
   process.once("SIGINT", () => { cleanup("SIGINT"); process.exit(0) })
@@ -882,6 +910,23 @@ async function initializeBot(): Promise<{ bot: Bot; opencode: OpencodeClient; se
 }
 
 const { bot, opencode } = await initializeBot()
+
+// Global authorization middleware - blocks all unauthorized users
+bot.use(async (ctx, next) => {
+  const userId = ctx.from?.id
+  if (!userId) return // No user ID, ignore
+
+  if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
+    // Unauthorized user - silently ignore or optionally send denial
+    const isDirectMessage = ctx.message || ctx.callbackQuery
+    if (isDirectMessage) {
+      await ctx.reply?.("⛔ Access denied. You are not authorized to use this bot.").catch(() => {})
+    }
+    return // Do not proceed to any handler
+  }
+
+  await next() // Authorized - proceed to handlers
+})
 
 bot.callbackQuery("abort", async (ctx) => {
   const msg = ctx.callbackQuery?.message; if (!msg) return
@@ -1418,10 +1463,6 @@ bot.on("message:text", async (ctx) => {
   }
   if (ctx.message.text.startsWith("/")) return
   if (ctx.message.text.startsWith("!")) {
-    if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
-      await ctx.reply("⛔ Shell access denied.", withThreadId({}, messageThreadId))
-      return
-    }
     const command = ctx.message.text.slice(1).trim()
     if (!command) { await ctx.reply("Usage: !<command>", withThreadId({}, messageThreadId)); return }
     const settings = db.loadUserSettings(userId) ?? {}
