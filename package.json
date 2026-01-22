@@ -12,7 +12,8 @@
     "compile:linux": "bun build --compile --minify --target=bun-linux-x64 src/index.ts --outfile opencode-telegram-linux",
     "compile:linux-arm": "bun build --compile --minify --target=bun-linux-arm64 src/index.ts --outfile opencode-telegram-linux-arm",
     "compile:windows": "bun build --compile --minify --target=bun-windows-x64 src/index.ts --outfile opencode-telegram.exe",
-    "compile:all": "bun run compile && bun run compile:linux && bun run compile:linux-arm && bun run compile:windows"
+    "compile:all": "bun run compile && bun run compile:linux && bun run compile:linux-arm && bun run compile:windows",
+    "package": "bun run scripts/package.ts"
   },
   "keywords": [
     "opencode",

@@ -91,6 +91,37 @@ bun run compile:windows    # Windows x64
 bun run compile:all        # All platforms
 ```
 
+### Compiled binary deployment
+
+Notes:
+
+- Bun binaries require AVX2 CPU support.
+- The OpenCode CLI must be installed on the host and available in PATH.
+- Provide required env vars at runtime (see Configuration above).
+
+Package outputs (binary + helpers) into `dist/`:
+
+```bash
+bun run package
+```
+
+Linux systemd (sample in `deploy/opencode-telegram.service`):
+
+```bash
+sudo mkdir -p /opt/opencode-telegram
+sudo cp dist/opencode-telegram-linux/* /opt/opencode-telegram
+sudo cp /opt/opencode-telegram/opencode-telegram.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now opencode-telegram
+```
+
+Docker (sample in `deploy/Dockerfile`):
+
+```bash
+docker build -t opencode-telegram -f deploy/Dockerfile .
+docker run --env-file .env opencode-telegram
+```
+
 ## Commands
 
 Configure in BotFather (`/setcommands`):
