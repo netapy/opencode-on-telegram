@@ -916,6 +916,13 @@ bot.use(async (ctx, next) => {
   const userId = ctx.from?.id
   if (!userId) return // No user ID, ignore
 
+  // Allow /myid command for anyone (so they can find their ID to request access)
+  const messageText = ctx.message && "text" in ctx.message ? ctx.message.text : null
+  if (messageText?.startsWith("/myid")) {
+    await next()
+    return
+  }
+
   if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
     // Unauthorized user - silently ignore or optionally send denial
     const isDirectMessage = ctx.message || ctx.callbackQuery
@@ -1164,6 +1171,16 @@ bot.command("start", async (ctx) => {
 })
 
 bot.command("help", async (ctx) => { await ctx.reply(constants.HELP_TEXT, withThreadId({}, getMessageThreadId(ctx))) })
+
+bot.command("myid", async (ctx) => {
+  const userId = ctx.from?.id
+  const chatId = ctx.chat.id
+  const messageThreadId = getMessageThreadId(ctx)
+  const lines = [`Your Telegram user ID: ${userId}`, `Chat ID: ${chatId}`]
+  if (messageThreadId) lines.push(`Thread ID: ${messageThreadId}`)
+  lines.push("", "Add your user ID to ALLOWED_USER_IDS in .env to authorize access.")
+  await ctx.reply(lines.join("\n"), withThreadId({}, messageThreadId))
+})
 
 bot.command("menu", async (ctx) => {
   const userId = ctx.from?.id; if (!userId) return
